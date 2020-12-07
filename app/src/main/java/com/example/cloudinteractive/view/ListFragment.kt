@@ -1,8 +1,11 @@
 package com.example.cloudinteractive.view
 
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.util.Log
+import android.util.LruCache
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -12,11 +15,6 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.bumptech.glide.Glide
-import com.bumptech.glide.load.engine.DiskCacheStrategy
-import com.bumptech.glide.load.model.GlideUrl
-import com.bumptech.glide.load.model.LazyHeaders
-import com.bumptech.glide.request.RequestOptions
 import com.example.cloudinteractive.R
 import com.example.cloudinteractive.model.Photo
 import com.example.cloudinteractive.view.PhotoDetailActivity.Companion.arg_id
@@ -25,12 +23,18 @@ import com.example.cloudinteractive.view.PhotoDetailActivity.Companion.arg_title
 import com.example.cloudinteractive.viewmodel.ListFragmentViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.android.synthetic.main.list_fragment.*
+import kotlinx.android.synthetic.main.photo_detail_activity.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.net.URL
 
 @AndroidEntryPoint
 class ListFragment: Fragment() {
 
     val viewModel by viewModels<ListFragmentViewModel> ()
     var photoList = ArrayList<Photo>()
+    lateinit var cache: LruCache<String, Bitmap>
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -42,6 +46,15 @@ class ListFragment: Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
+        val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
+        val cacheSize = maxMemory / 8
+        cache = object : LruCache<String, Bitmap>(cacheSize) {
+            override fun sizeOf(key: String, value: Bitmap): Int {
+                return value.byteCount / 1024
+            }
+        }
+
 
         setupRecyclerView()
 
@@ -56,8 +69,9 @@ class ListFragment: Fragment() {
             progressbar.visibility = View.GONE
 
         }
-
-
+        viewModel.updateViewHolderLiveData.observe(viewLifecycleOwner) {
+            recyclerview.adapter?.notifyItemChanged(it)
+        }
     }
 
     fun setupRecyclerView() {
@@ -98,19 +112,12 @@ class ListFragment: Fragment() {
             val photoTitle = itemView.findViewById<TextView>(R.id.photoTitle)
 
             fun setPhoto(photo: Photo) {
-                val glideUrl = GlideUrl(
-                    photo.thumbnailUrl,
-                    LazyHeaders.Builder()
-                        .addHeader("User-Agent", "custom-agent")
-                        .build()
-                )
-                Glide.with(itemView.context)
-                    .apply { RequestOptions()
-                                .fitCenter()
-                                .diskCacheStrategy(DiskCacheStrategy.ALL)
-                    }
-                    .load(glideUrl)
-                    .into(thumbnail)
+                if (viewModel.thumbnailMap[adapterPosition] == null) {
+                    thumbnail.setImageBitmap(null)
+                    viewModel.getThumbnail(adapterPosition, photo.thumbnailUrl)
+                } else {
+                    thumbnail.setImageBitmap(viewModel.thumbnailMap[adapterPosition])
+                }
 
                 photoId.text = photo.id.toString()
                 photoTitle.text = photo.title
@@ -121,7 +128,6 @@ class ListFragment: Fragment() {
                         putExtra(arg_title, photo.title)
                         putExtra(arg_thumbnail_url, photo.thumbnailUrl)
                     }
-
                     startActivity(intent)
                 }
             }
